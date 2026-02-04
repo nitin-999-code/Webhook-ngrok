@@ -1,16 +1,20 @@
-const express = require("express");
-const bodyParser = require("body-parser");
+import express from "express";
 
 const app = express();
-app.use(bodyParser.json());
+app.use(express.json());
 
 app.post("/webhook", (req, res) => {
-  console.log("GitHub Event:", req.headers["x-github-event"]);
+  console.log("✅ Webhook received!");
+  console.log("Event:", req.headers["x-github-event"]);
   console.log(req.body);
 
-  res.send("Webhook received!");
+  res.sendStatus(200);
+});
+
+app.get("/", (req, res) => {
+  res.send("Server running");
 });
 
 app.listen(3000, () => {
-  console.log("Server running on http://localhost:3000");
+  console.log("Server running on port 3000");
 });
