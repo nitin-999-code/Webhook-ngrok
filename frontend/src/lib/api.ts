@@ -54,8 +54,11 @@ export const fetchRepoDataWithRetry = async (
 
   const task = async () => {
     let attempt = 0;
-    const maxRetries = 3;
-    const delays = [2000, 4000, 8000];
+    const MAX_RETRIES = 4;
+    
+    const getRetryDelay = (attempt: number) => {
+      return Math.min(5000 * Math.pow(2, attempt), 40000);
+    };
 
     while (true) {
       try {
@@ -66,31 +69,33 @@ export const fetchRepoDataWithRetry = async (
         const status = err.response?.status;
         const isTimeout = err.code === 'ECONNABORTED' || err.message?.toLowerCase().includes('timeout');
         
-        if (status === 429 || status === 503 || isTimeout) {
-          if (attempt >= maxRetries) {
+        if (status === 429 || status === 503 || status === 504 || isTimeout) {
+          if (attempt >= MAX_RETRIES) {
             const finalError = new Error('AI Analysis Temporarily Busy');
             (finalError as any).isRateLimit = true;
             throw finalError;
           }
           
+          const nextRetryIn = getRetryDelay(attempt);
+
           // Logging for Debugging
           console.log({
             repo: url,
             status: status || 'timeout',
             retryAttempt: attempt + 1,
-            nextRetryIn: delays[attempt]
+            nextRetryIn
           });
 
           let baseMessage = 'Request timed out. Retrying...';
           if (status === 429) {
             baseMessage = 'Rate limit reached. Retrying automatically...';
-          } else if (status === 503) {
+          } else if (status === 503 || status === 504) {
             baseMessage = 'AI service temporarily busy. Retrying...';
           }
 
           onRetry(attempt + 1, baseMessage);
           
-          await new Promise(resolve => setTimeout(resolve, delays[attempt]));
+          await new Promise(resolve => setTimeout(resolve, nextRetryIn));
           attempt++;
         } else {
           throw err;
