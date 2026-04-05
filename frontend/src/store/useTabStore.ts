@@ -19,6 +19,7 @@ export interface RepoTab {
   chatMessages: ChatMessage[];
   chatOpen: boolean;
   chatExpanded: boolean;
+  loadingMessage?: string;
 }
 
 /* ═══════════════ HOOK ═══════════════ */
@@ -51,6 +52,7 @@ export function useTabStore() {
       chatMessages: [],
       chatOpen: false,
       chatExpanded: false,
+      loadingMessage: undefined,
     };
 
     setTabs(prev => [...prev, newTab]);
@@ -84,6 +86,7 @@ export function useTabStore() {
       chatMessages: [],
       chatOpen: false,
       chatExpanded: false,
+      loadingMessage: undefined,
     };
 
     setTabs(prev => [...prev, newTab]);
@@ -111,6 +114,7 @@ export function useTabStore() {
             isError: false,
             error: null,
             data: null,
+            loadingMessage: undefined,
           }
         : t
     ));
@@ -179,6 +183,12 @@ export function useTabStore() {
     ));
   }, []);
 
+  const updateTabLoadingMessage = useCallback((tabId: string, msg: string) => {
+    setTabs(prev => prev.map(t =>
+      t.id === tabId ? { ...t, loadingMessage: msg } : t
+    ));
+  }, []);
+
   return {
     tabs,
     activeTab,
@@ -193,5 +203,6 @@ export function useTabStore() {
     updateTabChat,
     setChatOpen,
     setChatExpanded,
+    updateTabLoadingMessage,
   };
 }

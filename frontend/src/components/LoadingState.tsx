@@ -11,7 +11,11 @@ const STEPS = [
   { label: "Finalizing analysis results...", target: 97 },
 ];
 
-export function LoadingState() {
+interface LoadingStateProps {
+  customMessage?: string;
+}
+
+export function LoadingState({ customMessage }: LoadingStateProps = {}) {
   const [stepIndex, setStepIndex] = useState(0);
   const [percent, setPercent] = useState(0);
 
@@ -107,7 +111,7 @@ export function LoadingState() {
           </div>
 
           <p className="font-medium text-sm hidden md:block w-72" style={{ color: T.muted }}>
-            {STEPS[stepIndex].label}
+            {customMessage || STEPS[stepIndex].label}
           </p>
         </div>
       </header>

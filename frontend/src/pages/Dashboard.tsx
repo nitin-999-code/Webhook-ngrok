@@ -22,25 +22,7 @@ import { ArchitectureGraph } from '../components/ArchitectureGraph';
 import { ShareModal } from '../components/ShareModal';
 import { Share2 } from 'lucide-react';
 
-const API_URL = 'https://sourcemind.onrender.com/api';
-
-/* ═══════════════ FETCH ═══════════════ */
-const fetchRepoData = async (url: string) => {
-  try {
-    const { data } = await axios.post(`${API_URL}/analyze`, { url });
-    return data;
-  } catch (err: any) {
-    // Tag rate-limit errors so the UI can detect them
-    if (err.response?.status === 429 || err.response?.data?.errorType === 'RATE_LIMIT') {
-      const rateLimitError = new Error(
-        err.response?.data?.error || 'AI analysis is temporarily busy. Please try again in a few seconds.'
-      );
-      (rateLimitError as any).isRateLimit = true;
-      throw rateLimitError;
-    }
-    throw err;
-  }
-};
+import { fetchRepoDataWithRetry } from '../lib/api';
 
 /* ═══════════════ COLLAPSIBLE ═══════════════ */
 function CollapsibleSection({ children }: { children: React.ReactNode }) {
@@ -602,12 +584,21 @@ export default function Dashboard() {
     updateTabChat,
     setChatOpen,
     setChatExpanded,
+    updateTabLoadingMessage,
   } = useTabStore();
 
   /* ── Fetch repo data for a tab ── */
   const analyzeRepo = useCallback(async (tabId: string, repoUrl: string) => {
+    // Ensure loading view shows normal progress initially
+    if (updateTabLoadingMessage) {
+      updateTabLoadingMessage(tabId, '');
+    }
     try {
-      const data = await fetchRepoData(repoUrl);
+      const data = await fetchRepoDataWithRetry(repoUrl, (attempt, baseMessage) => {
+        if (updateTabLoadingMessage) {
+          updateTabLoadingMessage(tabId, `${baseMessage} Attempt ${attempt} of 3`);
+        }
+      });
       updateTabData(tabId, data);
     } catch (err: any) {
       const isRateLimit = err?.isRateLimit === true;
@@ -618,7 +609,7 @@ export default function Dashboard() {
           : err.message);
       updateTabError(tabId, errorMsg);
     }
-  }, [updateTabData, updateTabError]);
+  }, [updateTabData, updateTabError, updateTabLoadingMessage]);
 
   /* ── Initialize with URL param ── */
   useEffect(() => {
@@ -697,7 +688,7 @@ export default function Dashboard() {
             onSubmit={(url) => handleAnalyzerSubmit(activeTab.id, url)}
           />
         ) : activeTab.isLoading ? (
-          <LoadingState />
+          <LoadingState customMessage={activeTab.loadingMessage} />
         ) : activeTab.isError ? (
           <ErrorView
             error={activeTab.error || 'Unknown error'}

@@ -6,13 +6,13 @@ import { LoadingState } from '../components/LoadingState';
 import { theme as T } from '../lib/theme';
 import Chat from '../components/Chat';
 import { Share2, Github } from 'lucide-react';
-
-const API_URL = 'https://sourcemind.onrender.com/api';
+import { fetchRepoDataWithRetry } from '../lib/api';
 
 export default function SharedAnalysis() {
   const { owner, repo } = useParams();
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [loadingMessage, setLoadingMessage] = useState<string>('');
   const [error, setError] = useState('');
   const [isRateLimit, setIsRateLimit] = useState(false);
   
@@ -40,6 +40,7 @@ export default function SharedAnalysis() {
     }
 
     setLoading(true);
+    setLoadingMessage('');
     setError('');
     setIsRateLimit(false);
     
@@ -47,15 +48,18 @@ export default function SharedAnalysis() {
     console.log("Share page repo:", url);
 
     try {
-      const response = await axios.post(`${API_URL}/analyze`, { url });
-      console.log("Analysis result:", response.data);
-      setData(response.data);
+      const data = await fetchRepoDataWithRetry(url, (attempt, baseMessage) => {
+        setLoadingMessage(`${baseMessage} Attempt ${attempt} of 3`);
+      });
+      console.log("Analysis result:", data);
+      setData(data);
     } catch (err: any) {
-      if (err.response?.status === 429 || err.response?.data?.errorType === 'RATE_LIMIT') {
+      const isRateL = err?.isRateLimit === true;
+      if (isRateL) {
         setIsRateLimit(true);
-        setError(err.response?.data?.error || 'AI analysis is temporarily busy.');
+        setError(err.message || 'AI analysis is temporarily busy.');
       } else {
-        setError(err.response?.data?.error || err.message || 'Repository analysis failed');
+        setError(axios.isAxiosError(err) ? err.response?.data?.error || err.message : err.message);
       }
       console.error("Analysis error:", err);
     } finally {
@@ -73,7 +77,7 @@ export default function SharedAnalysis() {
   if (loading || (!data && !error)) {
     return (
       <div className="min-h-screen flex flex-col pt-16" style={{ background: T.bg }}>
-        <LoadingState />
+        <LoadingState customMessage={loadingMessage} />
       </div>
     );
   }
