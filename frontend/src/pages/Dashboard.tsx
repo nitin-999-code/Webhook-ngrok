@@ -1,5 +1,5 @@
 import { useLocation, useNavigate } from 'react-router-dom';
-import axios from 'axios';
+
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { 
   Github, FileCode, Server, ListTree, Package, LayoutTemplate, 
@@ -22,7 +22,7 @@ import { ArchitectureGraph } from '../components/ArchitectureGraph';
 import { ShareModal } from '../components/ShareModal';
 import { Share2 } from 'lucide-react';
 
-import { fetchRepoDataWithRetry } from '../lib/api';
+import { fetchRepoDataWithRetry, normalizeError } from '../lib/api';
 
 /* ═══════════════ COLLAPSIBLE ═══════════════ */
 function CollapsibleSection({ children }: { children: React.ReactNode }) {
@@ -601,12 +601,21 @@ export default function Dashboard() {
       });
       updateTabData(tabId, data);
     } catch (err: any) {
-      const isRateLimit = err?.isRateLimit === true;
+      const normalizedError = normalizeError(err);
+      
+      console.error({
+        url: repoUrl,
+        status: normalizedError.status,
+        message: normalizedError.message,
+        retryAttempt: 0,
+        error: err
+      });
+
+      const isRateLimit = normalizedError.status === 429 || err?.isRateLimit === true;
       const errorMsg = isRateLimit
-        ? 'RATE_LIMIT:' + (err.message || 'AI analysis is temporarily busy.')
-        : (axios.isAxiosError(err) 
-          ? err.response?.data?.error || err.message 
-          : err.message);
+        ? 'RATE_LIMIT:' + normalizedError.message
+        : normalizedError.message;
+        
       updateTabError(tabId, errorMsg);
     }
   }, [updateTabData, updateTabError, updateTabLoadingMessage]);
@@ -691,7 +700,7 @@ export default function Dashboard() {
           <LoadingState customMessage={activeTab.loadingMessage} />
         ) : activeTab.isError ? (
           <ErrorView
-            error={activeTab.error || 'Unknown error'}
+            error={activeTab.error || 'Unexpected system error'}
             isRateLimit={activeTab.error?.startsWith('RATE_LIMIT:') || false}
             onRetry={() => {
               if (activeTab.repoUrl) {

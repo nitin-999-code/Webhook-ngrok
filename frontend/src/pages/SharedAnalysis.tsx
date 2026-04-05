@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import axios from 'axios';
+
 import { RepoContent, ErrorView } from './Dashboard';
 import { LoadingState } from '../components/LoadingState';
 import { theme as T } from '../lib/theme';
 import Chat from '../components/Chat';
 import { Share2, Github } from 'lucide-react';
-import { fetchRepoDataWithRetry } from '../lib/api';
+import { fetchRepoDataWithRetry, normalizeError } from '../lib/api';
 
 export default function SharedAnalysis() {
   const { owner, repo } = useParams();
@@ -54,14 +54,21 @@ export default function SharedAnalysis() {
       console.log("Analysis result:", data);
       setData(data);
     } catch (err: any) {
-      const isRateL = err?.isRateLimit === true;
+      const normalizedError = normalizeError(err);
+      
+      console.error({
+        url,
+        status: normalizedError.status,
+        message: normalizedError.message,
+        retryAttempt: 0,
+        error: err
+      });
+
+      const isRateL = normalizedError.status === 429 || err?.isRateLimit === true;
       if (isRateL) {
         setIsRateLimit(true);
-        setError(err.message || 'AI analysis is temporarily busy.');
-      } else {
-        setError(axios.isAxiosError(err) ? err.response?.data?.error || err.message : err.message);
       }
-      console.error("Analysis error:", err);
+      setError(normalizedError.message);
     } finally {
       setLoading(false);
     }

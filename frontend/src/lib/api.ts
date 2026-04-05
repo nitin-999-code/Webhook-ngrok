@@ -101,3 +101,39 @@ export const fetchRepoDataWithRetry = async (
 
   return analysisQueue.enqueue(task);
 };
+
+/* ═══════════════ ERROR NORMALIZATION ═══════════════ */
+export function normalizeError(error: any): { status?: number; message: string; code?: string } {
+  let status: number | undefined;
+  let message = "Unexpected system error";
+  let code: string | undefined;
+
+  if (axios.isAxiosError(error) && error.response) {
+    status = error.response.status;
+    message = error.response.data?.message || error.response.data?.error || error.message;
+    code = error.code;
+  } else if (error && typeof error === 'object') {
+    status = error.status || status;
+    message = error.message || message;
+    code = error.code || code;
+  }
+
+  if (error?.name === 'AbortError') {
+    message = "Request timed out. Please try again.";
+  } else if (error?.message === 'Failed to fetch') {
+    message = "Network failure. Please check your connection.";
+  } else if (status === 429) {
+    message = "Rate limit reached. Please wait and retry.";
+  } else if (status === 503) {
+    message = "AI service temporarily busy.";
+  } else if (status === 500) {
+    message = "Server error occurred during analysis.";
+  }
+
+  // Always return a continuous safe message
+  if (!message || message === 'undefined' || message === 'null') {
+    message = "Unexpected system error";
+  }
+
+  return { status, message, code };
+}
