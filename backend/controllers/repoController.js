@@ -133,43 +133,36 @@ const performAnalysis = async (owner, repo, repoUrl) => {
     ({ summary, folderExplanation, techStack, dependenciesExplanation, architecture, runInstructions } = structured);
     aiKeyFiles = structured.keyFiles || [];
   } else {
-    console.log('Using fallback individual prompts (parallelized)...');
+    console.log('Using fallback condensed individual prompts (parallelized)...');
 
-    // *** PARALLELIZED fallback — run all 7 prompts concurrently instead of sequentially ***
-    const [summaryRes, folderRes, techRes, depsRes, archRes, runRes, keyFilesRes] = await Promise.all([
+    // *** CONDENSED FALLBACK — run 3 batched prompts instead of 7 to avoid Tokens Per Minute (TPM) limits ***
+    const [summaryAndRun, archAndFolders, keyFilesAndDeps] = await Promise.all([
       generateCompletion(
-        `Based on this metadata: ${JSON.stringify(metadata)}\nAnd this title and description, summarize the project. Format exactly with these 3 headers and use concise bullet points: '### Project Purpose', '### Key Features', '### Use Cases'.`
+        `Based on this metadata: ${JSON.stringify(metadata)}\nAnd these dependencies:\n${depString}\nSummarize the project. Format with headers: '### Project Purpose', '### Key Features', '### Use Cases'. Then add a header '### How To Run The Project' with step-by-step instructions.`
       ),
       generateCompletion(
-        `Here is the file structure of a repository:\n${treeString}\nExplain the folder structure and its purpose. Use concise bullet points.`
+        `Here is the file structure:\n${treeString}\nAnd architecture context:\n${architectureContext}\nExplain the folder structure and its purpose. Follow it with a high-level system architecture overview under the header '### Architecture Overview'.`
       ),
       generateCompletion(
-        `Here are the dependency files of a project:\n${depString}\nDetect the frameworks and libraries used and list the main ones. Return as a Markdown list.`
-      ),
-      generateCompletion(
-        `Here are the dependency files of a project:\n${depString}\nExplain the dependencies and their roles in detail. Format exactly as a bulleted list under the header '### Dependencies'.`
-      ),
-      generateCompletion(
-        `Based on this file structure:\n${treeString}\nAnd these dependencies:\n${depString}\n\nAdditional context:\n${architectureContext}\n\nGive a high-level system architecture overview that references the detected entry point, core modules, and key directories. Format exactly as a bulleted list under the header '### Architecture Overview'.`
-      ),
-      generateCompletion(
-        `Based on these dependency files:\n${depString}\nAnd the repository name ${repoName}, generate instructions for running the project locally. Format exactly as a step-by-step list under the header '### How To Run The Project' (e.g. Clone repository, Install dependencies, Run development server) including bash code blocks where appropriate.`
-      ),
-      generateCompletion(
-        `Identify the most important files in this repository based on this structure. Output only a comma-separated list of file paths. Do not include any explanations.\n\nStructure:\n${treeString}`
+        `Here are the dependencies:\n${depString}\nDetect frameworks used and list them. Then explain the roles of dependencies under the header '### Dependencies'. Finally, list the 10 most important files from this structure:\n${treeString}\nOutput the important files at the very end under '### Important Files' as a comma-separated list.`
       ),
     ]);
 
-    summary = summaryRes;
-    folderExplanation = folderRes;
-    techStack = techRes;
-    dependenciesExplanation = depsRes;
-    architecture = archRes;
-    runInstructions = runRes;
-    aiKeyFiles = keyFilesRes
-      .split(',')
-      .map((f) => f.trim())
-      .filter(Boolean);
+    // Parse out the batched responses roughly
+    summary = summaryAndRun.split('### How To Run')[0] || summaryAndRun;
+    runInstructions = summaryAndRun.includes('### How To Run') ? '### How To Run' + summaryAndRun.split('### How To Run')[1] : '';
+
+    folderExplanation = archAndFolders.split('### Architecture')[0] || archAndFolders;
+    architecture = archAndFolders.includes('### Architecture') ? '### Architecture' + archAndFolders.split('### Architecture')[1] : '';
+
+    techStack = keyFilesAndDeps.split('### Dependencies')[0] || keyFilesAndDeps;
+    dependenciesExplanation = keyFilesAndDeps; // Include everything in dependencies as fallback
+    
+    // Attempt rudimentary extraction of important files
+    const impFilesMatch = keyFilesAndDeps.split('### Important Files')[1];
+    aiKeyFiles = impFilesMatch 
+      ? impFilesMatch.split(',').map((f) => f.trim()).filter(Boolean)
+      : [];
   }
 
   // 8. Score-based important file ranking (deduped, top 10)

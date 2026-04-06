@@ -31,30 +31,33 @@ const RETRY_DELAY_MS = 8000;
 const REQUEST_TIMEOUT_MS = 45000;
 
 /**
- * Serial throttle queue — prevents concurrent calls from bypassing the rate limit.
- *
- * When multiple calls fire concurrently (e.g. 7 parallel fallback prompts),
- * the promise chain ensures each call waits for the previous one's throttle
- * gate to complete before checking elapsed time.
- *
- * Without this, all concurrent calls read the same `lastCallTimestamp`
- * simultaneously and skip the delay — causing instant 429 errors.
+ * Serial queue — ensures we NEVER have concurrent connections to Groq
+ * AND maintains the minimum delay between requests.
  */
 let lastCallTimestamp = 0;
-let throttleChain = Promise.resolve();
+let requestQueue = Promise.resolve();
 
-const throttle = () => {
-  throttleChain = throttleChain.then(async () => {
-    const now = Date.now();
-    const elapsed = now - lastCallTimestamp;
-    if (elapsed < THROTTLE_DELAY_MS) {
-      const waitTime = THROTTLE_DELAY_MS - elapsed;
-      console.log(`  ⏱ Throttle: waiting ${waitTime}ms before next Groq call`);
-      await sleep(waitTime);
-    }
-    lastCallTimestamp = Date.now();
+const enqueueGroqCall = (task) => {
+  return new Promise((resolve, reject) => {
+    requestQueue = requestQueue.then(async () => {
+      try {
+        const now = Date.now();
+        const elapsed = now - lastCallTimestamp;
+        if (elapsed < THROTTLE_DELAY_MS) {
+          const waitTime = THROTTLE_DELAY_MS - elapsed;
+          console.log(`  ⏱ Throttle: waiting ${waitTime}ms before next Groq call`);
+          await sleep(waitTime);
+        }
+
+        const result = await task();
+        resolve(result);
+      } catch (error) {
+        reject(error);
+      } finally {
+        lastCallTimestamp = Date.now();
+      }
+    });
   });
-  return throttleChain;
 };
 
 /**
@@ -71,22 +74,22 @@ const withTimeout = (promise, ms) => {
 // ═══════════════ CORE API CALL WITH RETRY ═══════════════
 
 /**
- * Low-level Groq call with serial throttling, timeout, and retry on 429.
+ * Low-level Groq call with serial execution, timeout, and retry on 429.
  */
 const callGroqWithRetry = async (messages, { temperature = 0.5, max_tokens = 2000 } = {}) => {
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
-      // Serial throttle gate — concurrent calls are queued here
-      await throttle();
-
-      const chatCompletion = await withTimeout(
-        groq.chat.completions.create({
-          messages,
-          model: MODEL,
-          temperature,
-          max_tokens,
-        }),
-        REQUEST_TIMEOUT_MS
+      // Submitting the task to the serial queue
+      const chatCompletion = await enqueueGroqCall(() => 
+        withTimeout(
+          groq.chat.completions.create({
+            messages,
+            model: MODEL,
+            temperature,
+            max_tokens,
+          }),
+          REQUEST_TIMEOUT_MS
+        )
       );
 
       return chatCompletion.choices[0]?.message?.content || '';
@@ -97,13 +100,13 @@ const callGroqWithRetry = async (messages, { temperature = 0.5, max_tokens = 200
         error.message?.includes('rate_limit_exceeded');
 
       if (isRateLimit && attempt < MAX_RETRIES) {
-        const backoffDelay = RETRY_DELAY_MS * attempt; // exponential-ish backoff
+        // Backoff and then the loop will re-enqueue it
+        const backoffDelay = RETRY_DELAY_MS * attempt; 
         console.warn(`⚠ Groq rate limit hit (attempt ${attempt}/${MAX_RETRIES}). Retrying in ${backoffDelay / 1000}s...`);
         await sleep(backoffDelay);
         continue;
       }
 
-      // Re-throw with a clear flag so the controller can identify rate limits
       if (isRateLimit) {
         const rateLimitError = new Error('RATE_LIMIT_EXCEEDED');
         rateLimitError.isRateLimit = true;
