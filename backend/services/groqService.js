@@ -13,37 +13,48 @@ const MODEL = 'llama-3.1-8b-instant';
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * Minimum delay (ms) between consecutive Groq API calls to stay under rate limits.
- * Reduced from 1300ms — Groq free tier allows ~30 RPM, so ~800ms between calls is safe.
+ * Minimum delay (ms) between consecutive Groq API calls.
+ * Groq free tier: 30 RPM → need ~2000ms gap to be safe.
+ * Using 2200ms for safety margin.
  */
-const THROTTLE_DELAY_MS = 800;
+const THROTTLE_DELAY_MS = 2200;
 
 /**
  * Retry configuration for 429 (Rate Limit) errors.
  */
-const MAX_RETRIES = 3;
-const RETRY_DELAY_MS = 3000;
+const MAX_RETRIES = 4;
+const RETRY_DELAY_MS = 8000;
 
 /**
  * Timeout per Groq request (ms). Prevents hanging.
  */
-const REQUEST_TIMEOUT_MS = 30000;
+const REQUEST_TIMEOUT_MS = 45000;
 
 /**
- * Timestamp of the last Groq API call — used for throttling.
+ * Serial throttle queue — prevents concurrent calls from bypassing the rate limit.
+ *
+ * When multiple calls fire concurrently (e.g. 7 parallel fallback prompts),
+ * the promise chain ensures each call waits for the previous one's throttle
+ * gate to complete before checking elapsed time.
+ *
+ * Without this, all concurrent calls read the same `lastCallTimestamp`
+ * simultaneously and skip the delay — causing instant 429 errors.
  */
 let lastCallTimestamp = 0;
+let throttleChain = Promise.resolve();
 
-/**
- * Ensures a minimum gap between consecutive API calls.
- */
-const throttle = async () => {
-  const now = Date.now();
-  const elapsed = now - lastCallTimestamp;
-  if (elapsed < THROTTLE_DELAY_MS) {
-    await sleep(THROTTLE_DELAY_MS - elapsed);
-  }
-  lastCallTimestamp = Date.now();
+const throttle = () => {
+  throttleChain = throttleChain.then(async () => {
+    const now = Date.now();
+    const elapsed = now - lastCallTimestamp;
+    if (elapsed < THROTTLE_DELAY_MS) {
+      const waitTime = THROTTLE_DELAY_MS - elapsed;
+      console.log(`  ⏱ Throttle: waiting ${waitTime}ms before next Groq call`);
+      await sleep(waitTime);
+    }
+    lastCallTimestamp = Date.now();
+  });
+  return throttleChain;
 };
 
 /**
@@ -60,11 +71,12 @@ const withTimeout = (promise, ms) => {
 // ═══════════════ CORE API CALL WITH RETRY ═══════════════
 
 /**
- * Low-level Groq call with automatic throttling, timeout, and retry on 429.
+ * Low-level Groq call with serial throttling, timeout, and retry on 429.
  */
 const callGroqWithRetry = async (messages, { temperature = 0.5, max_tokens = 2000 } = {}) => {
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
+      // Serial throttle gate — concurrent calls are queued here
       await throttle();
 
       const chatCompletion = await withTimeout(
@@ -85,8 +97,9 @@ const callGroqWithRetry = async (messages, { temperature = 0.5, max_tokens = 200
         error.message?.includes('rate_limit_exceeded');
 
       if (isRateLimit && attempt < MAX_RETRIES) {
-        console.warn(`⚠ Groq rate limit hit (attempt ${attempt}/${MAX_RETRIES}). Retrying in ${RETRY_DELAY_MS / 1000}s...`);
-        await sleep(RETRY_DELAY_MS);
+        const backoffDelay = RETRY_DELAY_MS * attempt; // exponential-ish backoff
+        console.warn(`⚠ Groq rate limit hit (attempt ${attempt}/${MAX_RETRIES}). Retrying in ${backoffDelay / 1000}s...`);
+        await sleep(backoffDelay);
         continue;
       }
 
