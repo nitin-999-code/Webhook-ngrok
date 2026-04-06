@@ -76,7 +76,7 @@ const withTimeout = (promise, ms) => {
 /**
  * Low-level Groq call with serial execution, timeout, and retry on 429.
  */
-const callGroqWithRetry = async (messages, { temperature = 0.5, max_tokens = 2000 } = {}) => {
+const callGroqWithRetry = async (messages, { temperature = 0.5, max_tokens = 2000, response_format = undefined } = {}) => {
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
       // Submitting the task to the serial queue
@@ -87,6 +87,7 @@ const callGroqWithRetry = async (messages, { temperature = 0.5, max_tokens = 200
             model: MODEL,
             temperature,
             max_tokens,
+            response_format,
           }),
           REQUEST_TIMEOUT_MS
         )
@@ -100,8 +101,9 @@ const callGroqWithRetry = async (messages, { temperature = 0.5, max_tokens = 200
         error.message?.includes('rate_limit_exceeded');
 
       if (isRateLimit && attempt < MAX_RETRIES) {
-        // Backoff and then the loop will re-enqueue it
-        const backoffDelay = RETRY_DELAY_MS * attempt; 
+        // Tokens Per Minute (TPM) limit resets every minute. 
+        // We MUST back off significantly (e.g. 20s - 60s) to clear the TPM window.
+        const backoffDelay = Math.min(20000 * attempt, 65000); 
         console.warn(`⚠ Groq rate limit hit (attempt ${attempt}/${MAX_RETRIES}). Retrying in ${backoffDelay / 1000}s...`);
         await sleep(backoffDelay);
         continue;
@@ -144,7 +146,10 @@ export const generateCompletion = async (
  * Returns a parsed JSON object with all analysis fields.
  */
 export const generateStructuredAnalysis = async ({ metadata, treeString, pkgString, repoName, architectureContext = '' }) => {
-  const systemPrompt = `You are a senior software engineer. You will analyze a GitHub repository and return a SINGLE JSON response containing all analysis sections. You MUST respond with valid JSON only — no markdown fences, no explanations outside the JSON.`;
+  // Use a smaller slice of treeString to avoid Tokens Per Minute (TPM) limits on large repos like vercel/next.js
+  const safeTreeString = treeString.split('\n').slice(0, 60).join('\n');
+  
+  const systemPrompt = `You are a senior software engineer. You will analyze a GitHub repository and return a SINGLE JSON response containing all analysis sections. You MUST respond with valid JSON only.`;
 
   const archSection = architectureContext
     ? `\nDetected Architecture Context:\n${architectureContext}\n`
@@ -153,10 +158,10 @@ export const generateStructuredAnalysis = async ({ metadata, treeString, pkgStri
   const userPrompt = `Analyze this GitHub repository and return a JSON object with the following keys. Each value should be a markdown-formatted string unless specified otherwise.
 
 Repository: ${repoName}
-Metadata: ${JSON.stringify(metadata)}
+Metadata: ${JSON.stringify(metadata).slice(0, 500)}
 
-File Structure (first 150 files):
-${treeString}
+File Structure (sampled):
+${safeTreeString}
 
 Dependency Files:
 ${pkgString}
@@ -180,17 +185,20 @@ IMPORTANT: Return ONLY valid JSON. No markdown code fences. No text outside the 
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt },
       ],
-      { temperature: 0.3, max_tokens: 4000 }
+      { temperature: 0.2, max_tokens: 3500, response_format: { type: 'json_object' } }
     );
 
-    // Try to extract JSON from the response (handle potential markdown fences)
-    let jsonStr = raw.trim();
-    // Remove markdown code fences if present
-    if (jsonStr.startsWith('```')) {
-      jsonStr = jsonStr.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '');
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      // In case Groq adds fences even with json_object mode
+      let jsonStr = raw.trim();
+      if (jsonStr.startsWith('```')) {
+        jsonStr = jsonStr.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '');
+      }
+      parsed = JSON.parse(jsonStr);
     }
-
-    const parsed = JSON.parse(jsonStr);
 
     return {
       summary: parsed.summary || '',
@@ -206,9 +214,8 @@ IMPORTANT: Return ONLY valid JSON. No markdown code fences. No text outside the 
   } catch (error) {
     if (error.isRateLimit) throw error;
 
-    // If JSON parsing fails, fall back to individual calls
     console.warn('⚠ Structured analysis JSON parsing failed, falling back to individual prompts...');
-    return null; // signal the controller to use fallback
+    return null;
   }
 };
 

@@ -56,14 +56,18 @@ export const fetchRepoDataWithRetry = async (
     let attempt = 0;
     const MAX_RETRIES = 4;
     
-    const getRetryDelay = (attempt: number) => {
-      return Math.min(5000 * Math.pow(2, attempt), 40000);
+    const getRetryDelay = (attempt: number, status?: number) => {
+      // If we hit a 429, we likely hit a Tokens Per Minute limit which resets every 60s
+      if (status === 429) {
+        return 65000; // Force a 65 second wait
+      }
+      return Math.min(5000 * Math.pow(2, attempt), 30000);
     };
 
     while (true) {
       try {
         const { data } = await axios.post(`${API_URL}/analyze`, { url }, {
-          timeout: 120000, // 2 minute timeout for analysis
+          timeout: 150000, // 2.5 minute timeout for long queue
         });
         analysisCache.set(url, data);
         return data;
@@ -78,7 +82,7 @@ export const fetchRepoDataWithRetry = async (
             throw finalError;
           }
           
-          const nextRetryIn = getRetryDelay(attempt);
+          const nextRetryIn = getRetryDelay(attempt, status);
 
           console.log({
             repo: url,
@@ -89,7 +93,7 @@ export const fetchRepoDataWithRetry = async (
 
           let baseMessage = 'Request timed out. Retrying...';
           if (status === 429) {
-            baseMessage = 'Rate limit reached. Retrying automatically...';
+            baseMessage = 'Rate limit reached. Waiting 60s for AI to reset...';
           } else if (status === 503 || status === 504) {
             baseMessage = 'AI service temporarily busy. Retrying...';
           }
