@@ -2,11 +2,11 @@ import { useState, useEffect } from 'react';
 import { theme as T } from '../lib/theme';
 
 const STEPS = [
-  { label: "Fetching repository metadata from GitHub...", target: 12 },
-  { label: "Cloning and traversing file tree structure...", target: 28 },
-  { label: "Parsing dependencies from package files...", target: 42 },
-  { label: "Running AI heuristics to identify key files...", target: 58 },
-  { label: "Generating system architecture overview...", target: 72 },
+  { label: "Fetching repository metadata from GitHub...", target: 15 },
+  { label: "Cloning and traversing file tree structure...", target: 30 },
+  { label: "Parsing dependencies from package files...", target: 45 },
+  { label: "Running AI heuristics to identify key files...", target: 60 },
+  { label: "Generating system architecture overview...", target: 75 },
   { label: "Compiling comprehensive documentation...", target: 88 },
   { label: "Finalizing analysis results...", target: 97 },
 ];
@@ -19,11 +19,11 @@ export function LoadingState({ customMessage }: LoadingStateProps = {}) {
   const [stepIndex, setStepIndex] = useState(0);
   const [percent, setPercent] = useState(0);
 
-  // Advance through steps at intervals
+  // Advance through steps faster — 2.5s per step instead of 4.5s
   useEffect(() => {
     const interval = setInterval(() => {
       setStepIndex((prev) => (prev < STEPS.length - 1 ? prev + 1 : prev));
-    }, 4500);
+    }, 2500);
     return () => clearInterval(interval);
   }, []);
 
@@ -36,12 +36,12 @@ export function LoadingState({ customMessage }: LoadingStateProps = {}) {
           clearInterval(timer);
           return target;
         }
-        // Ease toward target in small increments
+        // Faster easing toward target
         const diff = target - prev;
-        const step = Math.max(0.3, diff * 0.08);
+        const step = Math.max(0.5, diff * 0.12);
         return Math.min(prev + step, target);
       });
-    }, 50);
+    }, 40);
     return () => clearInterval(timer);
   }, [stepIndex]);
 

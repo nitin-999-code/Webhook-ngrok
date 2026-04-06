@@ -14,14 +14,20 @@ export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Minimum delay (ms) between consecutive Groq API calls to stay under rate limits.
+ * Reduced from 1300ms — Groq free tier allows ~30 RPM, so ~800ms between calls is safe.
  */
-const THROTTLE_DELAY_MS = 1300;
+const THROTTLE_DELAY_MS = 800;
 
 /**
  * Retry configuration for 429 (Rate Limit) errors.
  */
 const MAX_RETRIES = 3;
-const RETRY_DELAY_MS = 5000;
+const RETRY_DELAY_MS = 3000;
+
+/**
+ * Timeout per Groq request (ms). Prevents hanging.
+ */
+const REQUEST_TIMEOUT_MS = 30000;
 
 /**
  * Timestamp of the last Groq API call — used for throttling.
@@ -40,22 +46,36 @@ const throttle = async () => {
   lastCallTimestamp = Date.now();
 };
 
+/**
+ * Creates a timeout-wrapped promise.
+ */
+const withTimeout = (promise, ms) => {
+  let timer;
+  const timeoutPromise = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error('Groq request timed out')), ms);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timer));
+};
+
 // ═══════════════ CORE API CALL WITH RETRY ═══════════════
 
 /**
- * Low-level Groq call with automatic throttling and retry on 429.
+ * Low-level Groq call with automatic throttling, timeout, and retry on 429.
  */
 const callGroqWithRetry = async (messages, { temperature = 0.5, max_tokens = 2000 } = {}) => {
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
       await throttle();
 
-      const chatCompletion = await groq.chat.completions.create({
-        messages,
-        model: MODEL,
-        temperature,
-        max_tokens,
-      });
+      const chatCompletion = await withTimeout(
+        groq.chat.completions.create({
+          messages,
+          model: MODEL,
+          temperature,
+          max_tokens,
+        }),
+        REQUEST_TIMEOUT_MS
+      );
 
       return chatCompletion.choices[0]?.message?.content || '';
     } catch (error) {

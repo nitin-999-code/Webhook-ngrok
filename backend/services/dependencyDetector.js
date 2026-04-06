@@ -169,7 +169,7 @@ const ECOSYSTEMS = [
     file: 'Gemfile',
     parse: (content) => {
       const deps = [];
-      const gemMatches = content.matchAll(/gem\s+['"](\S+?)['"]/g);
+      const gemMatches = content.matchAll(/gem\s+['"](\\S+?)['"]/g);
       for (const m of gemMatches) {
         deps.push(m[1]);
       }
@@ -226,6 +226,7 @@ const FRAMEWORK_PATTERNS = [
 
 /**
  * Detect dependencies across all supported ecosystems.
+ * *** PARALLELIZED — all ecosystem manifest files are fetched concurrently. ***
  *
  * @param {string} owner - GitHub repo owner
  * @param {string} repo - GitHub repo name
@@ -233,36 +234,37 @@ const FRAMEWORK_PATTERNS = [
  * @returns {{ ecosystems: object[], totalDeps: number, depString: string }}
  */
 export const detectDependencies = async (owner, repo, filePaths = []) => {
-  const results = [];
-
-  for (const eco of ECOSYSTEMS) {
+  // Build fetch promises for ALL ecosystems in parallel
+  const fetchPromises = ECOSYSTEMS.map(async (eco) => {
     try {
       // Special case: C# — find first .csproj in tree
       if (eco.filePattern) {
         const csprojFile = filePaths.find((f) => eco.filePattern.test(f));
-        if (csprojFile) {
-          const content = await fetchFileContent(owner, repo, csprojFile);
-          if (content) {
-            const parsed = eco.parse(String(content), csprojFile);
-            if (parsed && (parsed.dependencies.length > 0 || parsed.devDependencies.length > 0)) {
-              results.push(parsed);
-            }
-          }
+        if (!csprojFile) return null;
+        const content = await fetchFileContent(owner, repo, csprojFile);
+        if (!content) return null;
+        const parsed = eco.parse(String(content), csprojFile);
+        if (parsed && (parsed.dependencies.length > 0 || parsed.devDependencies.length > 0)) {
+          return parsed;
         }
-        continue;
+        return null;
       }
 
       const content = await fetchFileContent(owner, repo, eco.file);
-      if (content) {
-        const parsed = eco.parse(String(content));
-        if (parsed && (parsed.dependencies.length > 0 || parsed.devDependencies.length > 0)) {
-          results.push(parsed);
-        }
+      if (!content) return null;
+      const parsed = eco.parse(String(content));
+      if (parsed && (parsed.dependencies.length > 0 || parsed.devDependencies.length > 0)) {
+        return parsed;
       }
+      return null;
     } catch (e) {
-      // Silently skip ecosystems that fail
+      return null; // Silently skip ecosystems that fail
     }
-  }
+  });
+
+  // Wait for ALL ecosystem fetches in parallel
+  const settled = await Promise.all(fetchPromises);
+  const results = settled.filter(Boolean);
 
   // Calculate totals
   const totalDeps = results.reduce(
@@ -290,7 +292,7 @@ export const detectDependencies = async (owner, repo, filePaths = []) => {
 
 /**
  * Detect frameworks from code imports when no dependency files exist.
- * Scans a sample of source files for import patterns.
+ * *** PARALLELIZED — all source files are fetched concurrently. ***
  *
  * @param {string} owner
  * @param {string} repo
@@ -305,19 +307,24 @@ export const detectFrameworksFromImports = async (owner, repo, filePaths) => {
 
   const detected = new Set();
 
-  for (const file of sourceFiles) {
-    try {
-      const content = await fetchFileContent(owner, repo, file);
-      if (!content) continue;
-      const text = String(content).slice(0, 3000); // only scan first 3KB
-
-      for (const { pattern, framework } of FRAMEWORK_PATTERNS) {
-        if (pattern.test(text)) {
-          detected.add(framework);
-        }
+  // Fetch all source files in parallel
+  const fetchResults = await Promise.all(
+    sourceFiles.map(async (file) => {
+      try {
+        const content = await fetchFileContent(owner, repo, file);
+        return content ? String(content).slice(0, 3000) : null;
+      } catch {
+        return null;
       }
-    } catch {
-      // skip
+    })
+  );
+
+  for (const text of fetchResults) {
+    if (!text) continue;
+    for (const { pattern, framework } of FRAMEWORK_PATTERNS) {
+      if (pattern.test(text)) {
+        detected.add(framework);
+      }
     }
   }
 
@@ -425,4 +432,3 @@ export const groupDependencies = (ecosystems) => {
 
   return groups;
 };
-

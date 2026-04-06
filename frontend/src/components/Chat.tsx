@@ -57,10 +57,25 @@ export default function Chat({
     setLoading(true);
 
     try {
-      const { data } = await axios.post(`${API_URL}/chat`, { repoId, message: query });
+      const { data } = await axios.post(`${API_URL}/chat`, { repoId, message: query }, {
+        timeout: 30000, // 30s timeout for chat
+      });
       onMessagesChange([...newMessages, { role: 'assistant' as const, content: data.reply }]);
-    } catch (error) {
-      onMessagesChange([...newMessages, { role: 'assistant' as const, content: 'Connection error while communicating with the AI. Ensure backend and vector DB are running.' }]);
+    } catch (error: any) {
+      let errorMsg = 'Sorry, I encountered an error processing your question. Please try again.';
+      
+      const status = error?.response?.status;
+      if (status === 429) {
+        errorMsg = 'AI is temporarily busy due to rate limiting. Please wait a moment and try again.';
+      } else if (status === 503 || status === 504) {
+        errorMsg = 'The AI service is temporarily unavailable. Please try again in a few seconds.';
+      } else if (error?.code === 'ECONNABORTED' || error?.message?.includes('timeout')) {
+        errorMsg = 'The request timed out. Please try again with a shorter question.';
+      } else if (status === 500) {
+        errorMsg = 'A server error occurred. Please try again.';
+      }
+      
+      onMessagesChange([...newMessages, { role: 'assistant' as const, content: errorMsg }]);
     } finally {
       setLoading(false);
     }

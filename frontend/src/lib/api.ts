@@ -62,7 +62,9 @@ export const fetchRepoDataWithRetry = async (
 
     while (true) {
       try {
-        const { data } = await axios.post(`${API_URL}/analyze`, { url });
+        const { data } = await axios.post(`${API_URL}/analyze`, { url }, {
+          timeout: 120000, // 2 minute timeout for analysis
+        });
         analysisCache.set(url, data);
         return data;
       } catch (err: any) {
@@ -78,7 +80,6 @@ export const fetchRepoDataWithRetry = async (
           
           const nextRetryIn = getRetryDelay(attempt);
 
-          // Logging for Debugging
           console.log({
             repo: url,
             status: status || 'timeout',
@@ -135,74 +136,10 @@ export function normalizeError(error: any): { status?: number; message: string; 
     message = "Server error occurred during analysis.";
   }
 
-  // Always return a continuous safe message
+  // Always return a safe message
   if (!message || message === 'undefined' || message === 'null') {
     message = "Unexpected system error";
   }
 
   return { status, message, code };
-}
-
-/* ═══════════════ FALLBACK ANALYSIS ═══════════════ */
-export async function fetchBasicRepoInfo(repoUrl: string) {
-  const parts = repoUrl.replace(/^https?:\/\/(www\.)?github\.com\//, '').replace(/\/$/, '').split('/');
-  const owner = parts[0];
-  const repo = parts[1];
-
-  if (!owner || !repo) throw new Error("Invalid GitHub URL");
-
-  const [repoRes, langRes, contentsRes] = await Promise.all([
-    fetch(`https://api.github.com/repos/${owner}/${repo}`).then(res => res.json()),
-    fetch(`https://api.github.com/repos/${owner}/${repo}/languages`).then(res => res.json()),
-    fetch(`https://api.github.com/repos/${owner}/${repo}/contents`).then(res => res.json())
-  ]);
-
-  if (repoRes.message && repoRes.message.includes('API rate limit')) {
-    throw new Error("GitHub API rate limit exceeded during fallback");
-  }
-
-  const totalBytes = Object.values(langRes).reduce((a: any, b: any) => a + b, 0) as number;
-  const languages = Object.entries(langRes).map(([name, bytes]) => ({
-    name,
-    percentage: totalBytes > 0 ? ((bytes as number) / totalBytes) * 100 : 0,
-    color: '#34D399' // dynamic color isn't provided by GH directly, fallback.
-  }));
-
-  const tree = Array.isArray(contentsRes) ? contentsRes.map(item => ({
-    name: item.name,
-    type: item.type === 'dir' ? 'directory' : 'file',
-    path: item.path,
-    size: item.size
-  })) : [];
-
-  return {
-    isFallbackMode: true,
-    metadata: {
-      name: repoRes.name || repo,
-      owner: repoRes.owner?.login || owner,
-      url: repoUrl,
-      description: repoRes.description,
-      stars: repoRes.stargazers_count || 0,
-      forks: repoRes.forks_count || 0,
-      openIssues: repoRes.open_issues_count || 0,
-      defaultBranch: repoRes.default_branch || 'main',
-      lastUpdated: repoRes.updated_at || new Date().toISOString(),
-      avatarUrl: repoRes.owner?.avatar_url
-    },
-    summary: repoRes.description || "No description provided.",
-    languages,
-    complexity: {
-      score: 'Medium',
-      estimatedTime: '~5 min',
-      numFiles: tree.length,
-      folderDepth: 1,
-      approxLOC: 0
-    },
-    tree,
-    architecture: "AI architecture analysis is pending backend processing...",
-    techStack: "Tech stack analysis is pending backend processing...",
-    folderExplanation: "Folder explanation pending...",
-    dependenciesExplanation: "Dependency analysis pending...",
-    runInstructions: "Run instructions pending..."
-  };
 }

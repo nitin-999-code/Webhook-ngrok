@@ -7,22 +7,8 @@ import { detectEntryPoints, detectCoreModules, detectMajorDirectories } from '..
 
 // ═══════════════ CACHING & DEDUP ═══════════════
 
-/**
- * Full analysis result cache — keyed by the NORMALIZED repo URL.
- * This ensures each repo is completely isolated.
- */
 const analysisCache = new Map();
-
-/**
- * Chat context cache — lightweight repo context for the chat feature.
- * Also keyed by normalized repo URL.
- */
 const chatContextCache = new Map();
-
-/**
- * In-progress tracker — prevents duplicate simultaneous analyses.
- * Keyed by normalized repo URL.
- */
 const inProgress = new Map();
 
 // ═══════════════ HELPERS ═══════════════
@@ -33,18 +19,12 @@ const parseGitHubUrl = (url) => {
   return { owner: match[1], repo: match[2].replace('.git', '') };
 };
 
-/**
- * Normalize a GitHub URL to a consistent cache key.
- */
 const normalizeCacheKey = (url) => {
   const parsed = parseGitHubUrl(url);
   if (!parsed) return url;
   return `github.com/${parsed.owner}/${parsed.repo}`.toLowerCase();
 };
 
-/**
- * Detects if an error is a Groq rate-limit error.
- */
 const isRateLimitError = (error) => {
   return (
     error.isRateLimit === true ||
@@ -91,24 +71,28 @@ const performAnalysis = async (owner, repo, repoUrl) => {
 
   const treeString = filePaths.slice(0, 150).join('\n');
 
-  // 3. Multi-ecosystem dependency detection + grouping
-  const depResult = await detectDependencies(owner, repo, filePaths);
+  // 3. Multi-ecosystem dependency detection + README fetch — ALL IN PARALLEL
+  const [depResult, readmeContent] = await Promise.all([
+    detectDependencies(owner, repo, filePaths),
+    fetchFileContent(owner, repo, 'README.md').then(r => r || '').catch(() => ''),
+  ]);
+
   const numDependencies = depResult.totalDeps;
   const depString = depResult.depString;
   const depGroups = groupDependencies(depResult.ecosystems);
 
-  // If no dependency files found, detect frameworks from imports
+  // If no dependency files found, detect frameworks from imports (parallelized internally)
   let detectedFrameworks = [];
   if (depResult.ecosystems.length === 0) {
     detectedFrameworks = await detectFrameworksFromImports(owner, repo, filePaths);
   }
 
-  // 4. Entry point detection & core modules
+  // 4. Entry point detection & core modules (synchronous, in-memory — instant)
   const { entryPoints, primaryEntry } = detectEntryPoints(filePaths);
   const coreModules = detectCoreModules(filePaths);
   const majorDirs = detectMajorDirectories(filePaths);
 
-  // 5. Complexity calculation  
+  // 5. Complexity calculation
   const numFiles = filePaths.length;
   const folderDepth = Math.max(...filePaths.map((p) => p.split('/').length), 1);
   const totalBytes = treeData.tree.reduce((acc, item) => acc + (item.size || 0), 0);
@@ -149,30 +133,40 @@ const performAnalysis = async (owner, repo, repoUrl) => {
     ({ summary, folderExplanation, techStack, dependenciesExplanation, architecture, runInstructions } = structured);
     aiKeyFiles = structured.keyFiles || [];
   } else {
-    console.log('Using fallback individual prompts...');
-    summary = await generateCompletion(
-      `Based on this metadata: ${JSON.stringify(metadata)}\nAnd this title and description, summarize the project. Format exactly with these 3 headers and use concise bullet points: '### Project Purpose', '### Key Features', '### Use Cases'.`
-    );
-    folderExplanation = await generateCompletion(
-      `Here is the file structure of a repository:\n${treeString}\nExplain the folder structure and its purpose. Use concise bullet points.`
-    );
-    techStack = await generateCompletion(
-      `Here are the dependency files of a project:\n${depString}\nDetect the frameworks and libraries used and list the main ones. Return as a Markdown list.`
-    );
-    dependenciesExplanation = await generateCompletion(
-      `Here are the dependency files of a project:\n${depString}\nExplain the dependencies and their roles in detail. Format exactly as a bulleted list under the header '### Dependencies'.`
-    );
-    architecture = await generateCompletion(
-      `Based on this file structure:\n${treeString}\nAnd these dependencies:\n${depString}\n\nAdditional context:\n${architectureContext}\n\nGive a high-level system architecture overview that references the detected entry point, core modules, and key directories. Format exactly as a bulleted list under the header '### Architecture Overview'.`
-    );
-    runInstructions = await generateCompletion(
-      `Based on these dependency files:\n${depString}\nAnd the repository name ${repoName}, generate instructions for running the project locally. Format exactly as a step-by-step list under the header '### How To Run The Project' (e.g. Clone repository, Install dependencies, Run development server) including bash code blocks where appropriate.`
-    );
+    console.log('Using fallback individual prompts (parallelized)...');
 
-    const keyFilesResponse = await generateCompletion(
-      `Identify the most important files in this repository based on this structure. Output only a comma-separated list of file paths. Do not include any explanations.\n\nStructure:\n${treeString}`
-    );
-    aiKeyFiles = keyFilesResponse
+    // *** PARALLELIZED fallback — run all 7 prompts concurrently instead of sequentially ***
+    const [summaryRes, folderRes, techRes, depsRes, archRes, runRes, keyFilesRes] = await Promise.all([
+      generateCompletion(
+        `Based on this metadata: ${JSON.stringify(metadata)}\nAnd this title and description, summarize the project. Format exactly with these 3 headers and use concise bullet points: '### Project Purpose', '### Key Features', '### Use Cases'.`
+      ),
+      generateCompletion(
+        `Here is the file structure of a repository:\n${treeString}\nExplain the folder structure and its purpose. Use concise bullet points.`
+      ),
+      generateCompletion(
+        `Here are the dependency files of a project:\n${depString}\nDetect the frameworks and libraries used and list the main ones. Return as a Markdown list.`
+      ),
+      generateCompletion(
+        `Here are the dependency files of a project:\n${depString}\nExplain the dependencies and their roles in detail. Format exactly as a bulleted list under the header '### Dependencies'.`
+      ),
+      generateCompletion(
+        `Based on this file structure:\n${treeString}\nAnd these dependencies:\n${depString}\n\nAdditional context:\n${architectureContext}\n\nGive a high-level system architecture overview that references the detected entry point, core modules, and key directories. Format exactly as a bulleted list under the header '### Architecture Overview'.`
+      ),
+      generateCompletion(
+        `Based on these dependency files:\n${depString}\nAnd the repository name ${repoName}, generate instructions for running the project locally. Format exactly as a step-by-step list under the header '### How To Run The Project' (e.g. Clone repository, Install dependencies, Run development server) including bash code blocks where appropriate.`
+      ),
+      generateCompletion(
+        `Identify the most important files in this repository based on this structure. Output only a comma-separated list of file paths. Do not include any explanations.\n\nStructure:\n${treeString}`
+      ),
+    ]);
+
+    summary = summaryRes;
+    folderExplanation = folderRes;
+    techStack = techRes;
+    dependenciesExplanation = depsRes;
+    architecture = archRes;
+    runInstructions = runRes;
+    aiKeyFiles = keyFilesRes
       .split(',')
       .map((f) => f.trim())
       .filter(Boolean);
@@ -188,8 +182,6 @@ const performAnalysis = async (owner, repo, repoUrl) => {
   }
 
   // 9. Store documents for chat (background, non-blocking)
-  const readmeContent = (await fetchFileContent(owner, repo, 'README.md')) || '';
-
   (async () => {
     try {
       const chunks = [];
@@ -215,7 +207,7 @@ const performAnalysis = async (owner, repo, repoUrl) => {
     }
   })();
 
-  // Store chat context
+  // Store chat context (always available, even without ChromaDB)
   chatContextCache.set(cacheKey, {
     name: metadata.name,
     description: metadata.description,
@@ -248,7 +240,6 @@ const performAnalysis = async (owner, repo, repoUrl) => {
     architecture,
     runInstructions,
     keyFiles,
-    // New: structured architecture data for frontend
     entryPoints: entryPoints.map((e) => e.path),
     primaryEntry,
     coreModules,
@@ -360,9 +351,16 @@ export const chatWithRepository = async (req, res) => {
   }
 
   try {
-    const contextDoc = await queryDocuments(repoId, message, 3);
-    const vectorContext = Array.isArray(contextDoc) ? contextDoc.join('\n\n') : '';
+    // Try vector DB first, but gracefully handle when unavailable
+    let vectorContext = '';
+    try {
+      const contextDoc = await queryDocuments(repoId, message, 3);
+      vectorContext = Array.isArray(contextDoc) ? contextDoc.join('\n\n') : '';
+    } catch (e) {
+      console.warn('Vector DB query failed, using cached context only:', e.message);
+    }
 
+    // Find cached context for this repo
     let cached = null;
     for (const [, val] of chatContextCache) {
       if (val.repoId === repoId) {

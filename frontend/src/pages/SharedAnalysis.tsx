@@ -6,7 +6,7 @@ import { LoadingState } from '../components/LoadingState';
 import { theme as T } from '../lib/theme';
 import Chat from '../components/Chat';
 import { Share2, Github } from 'lucide-react';
-import { fetchRepoDataWithRetry, normalizeError, fetchBasicRepoInfo } from '../lib/api';
+import { fetchRepoDataWithRetry, normalizeError } from '../lib/api';
 
 export default function SharedAnalysis() {
   const { owner, repo } = useParams();
@@ -49,9 +49,8 @@ export default function SharedAnalysis() {
 
     try {
       const data = await fetchRepoDataWithRetry(url, (attempt, baseMessage) => {
-        setLoadingMessage(`${baseMessage} Attempt ${attempt} of 3`);
+        setLoadingMessage(`${baseMessage} Attempt ${attempt} of 4`);
       });
-      console.log("Analysis result:", data);
       setData(data);
     } catch (err: any) {
       const normalizedError = normalizeError(err);
@@ -60,33 +59,14 @@ export default function SharedAnalysis() {
         url,
         status: normalizedError.status,
         message: normalizedError.message,
-        retryAttempt: 0,
         error: err
       });
 
-      try {
-        console.log("Fallback analysis activated");
-        const fallbackData = await fetchBasicRepoInfo(url);
-        setData(fallbackData);
-        setError('');
-
-        console.log("Retrying AI analysis in background");
-        const intervalId = setInterval(async () => {
-          try {
-            const data = await fetchRepoDataWithRetry(url, () => {});
-            setData(data);
-            clearInterval(intervalId);
-          } catch (e) {
-            // keep failing silently and retrying every 60s
-          }
-        }, 60000);
-      } catch (fallbackError) {
-        const isRateL = normalizedError.status === 429 || err?.isRateLimit === true;
-        if (isRateL) {
-          setIsRateLimit(true);
-        }
-        setError(normalizedError.message);
+      const isRateL = normalizedError.status === 429 || err?.isRateLimit === true;
+      if (isRateL) {
+        setIsRateLimit(true);
       }
+      setError(normalizedError.message);
     } finally {
       setLoading(false);
     }
