@@ -22,7 +22,7 @@ import { ArchitectureGraph } from '../components/ArchitectureGraph';
 import { ShareModal } from '../components/ShareModal';
 import { Share2 } from 'lucide-react';
 
-import { fetchRepoDataWithRetry, normalizeError } from '../lib/api';
+import { fetchRepoDataWithRetry, normalizeError, fetchBasicRepoInfo } from '../lib/api';
 
 /* ═══════════════ COLLAPSIBLE ═══════════════ */
 function CollapsibleSection({ children }: { children: React.ReactNode }) {
@@ -120,6 +120,11 @@ export function RepoContent({ data, isSharedView = false }: { data: any, isShare
 
   return (
     <>
+      {data.isFallbackMode && (
+        <div style={{ background: 'rgba(245,158,11,0.15)', borderBottom: '1px solid rgba(245,158,11,0.3)', color: '#FBBF24', padding: '12px', textAlign: 'center', fontSize: '14px' }}>
+          Limited analysis available. Full AI insights will retry automatically in the background.
+        </div>
+      )}
       {/* ═══════════ HEADER ═══════════ */}
       <div
         className="w-full px-6 py-4 flex items-center justify-between"
@@ -611,12 +616,29 @@ export default function Dashboard() {
         error: err
       });
 
-      const isRateLimit = normalizedError.status === 429 || err?.isRateLimit === true;
-      const errorMsg = isRateLimit
-        ? 'RATE_LIMIT:' + normalizedError.message
-        : normalizedError.message;
-        
-      updateTabError(tabId, errorMsg);
+      try {
+        console.log("Fallback analysis activated");
+        const fallbackData = await fetchBasicRepoInfo(repoUrl);
+        updateTabData(tabId, fallbackData);
+
+        console.log("Retrying AI analysis in background");
+        const intervalId = setInterval(async () => {
+          try {
+            const data = await fetchRepoDataWithRetry(repoUrl, () => {});
+            updateTabData(tabId, data);
+            clearInterval(intervalId);
+          } catch (e) {
+            // keep failing silently and retrying every 60s
+          }
+        }, 60000);
+      } catch (fallbackError) {
+        const isRateLimit = normalizedError.status === 429 || err?.isRateLimit === true;
+        const errorMsg = isRateLimit
+          ? 'RATE_LIMIT:' + normalizedError.message
+          : normalizedError.message;
+          
+        updateTabError(tabId, errorMsg);
+      }
     }
   }, [updateTabData, updateTabError, updateTabLoadingMessage]);
 
