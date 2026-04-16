@@ -26,11 +26,17 @@ const normalizeCacheKey = (url) => {
 };
 
 const isRateLimitError = (error) => {
+  const status = error.status || error.response?.status;
+  const message = (error.message || '').toLowerCase();
+  const resMessage = (error.response?.data?.message || '').toLowerCase();
+
   return (
     error.isRateLimit === true ||
-    error.message?.includes('RATE_LIMIT_EXCEEDED') ||
-    error.message?.includes('Rate limit') ||
-    error.status === 429
+    message.includes('rate_limit_exceeded') ||
+    message.includes('rate limit') ||
+    resMessage.includes('rate limit') ||
+    status === 429 ||
+    (status === 403 && (resMessage.includes('rate limit') || error.response?.headers?.['x-ratelimit-remaining'] === '0'))
   );
 };
 
@@ -94,7 +100,11 @@ const performAnalysis = async (owner, repo, repoUrl) => {
 
   // 5. Complexity calculation
   const numFiles = filePaths.length;
-  const folderDepth = Math.max(...filePaths.map((p) => p.split('/').length), 1);
+  let folderDepth = 1;
+  for (const p of filePaths) {
+    const depth = p.split('/').length;
+    if (depth > folderDepth) folderDepth = depth;
+  }
   const totalBytes = treeData.tree.reduce((acc, item) => acc + (item.size || 0), 0);
   const approxLOC = Math.floor(totalBytes / 30);
 
@@ -272,7 +282,7 @@ const buildArchitectureContext = ({ primaryEntry, entryPoints, coreModules, majo
     lines.push(`Core Modules: ${coreModules.map((m) => `${m.directory} (${m.label}, ${m.fileCount} files)`).join(', ')}`);
   }
   if (majorDirs.length > 0) {
-    lines.push(`Major Directories: ${majorDirs.join(', ')}`);
+    lines.push(`Major Directories: ${majorDirs.slice(0, 15).join(', ')}`);
   }
   if (detectedFrameworks.length > 0) {
     lines.push(`Detected Frameworks: ${detectedFrameworks.join(', ')}`);

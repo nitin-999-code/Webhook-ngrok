@@ -137,7 +137,9 @@ export function normalizeError(error: any): { status?: number; message: string; 
   } else if (status === 503) {
     message = "AI service temporarily busy.";
   } else if (status === 500) {
-    message = "Server error occurred during analysis.";
+    if (message === "Unexpected system error" || message === "Request failed with status code 500" || !message) {
+      message = "Server error occurred during analysis.";
+    }
   }
 
   // Always return a safe message
