@@ -20,7 +20,7 @@ import { fetchFileContent } from './githubService.js';
 const ECOSYSTEMS = [
   {
     name: 'Node.js',
-    file: 'package.json',
+    filePattern: /(^|\/)package\.json$/i,
     parse: (content) => {
       try {
         const pkg = JSON.parse(content);
@@ -239,20 +239,41 @@ export const detectDependencies = async (owner, repo, filePaths = []) => {
     try {
       // Special case: C# — find first .csproj in tree
       if (eco.filePattern) {
-        const csprojFile = filePaths.find((f) => eco.filePattern.test(f));
-        if (!csprojFile) return null;
-        const content = await fetchFileContent(owner, repo, csprojFile);
-        if (!content) return null;
-        const parsed = eco.parse(String(content), csprojFile);
-        if (parsed && (parsed.dependencies.length > 0 || parsed.devDependencies.length > 0)) {
-          return parsed;
+        const matchingFiles = filePaths.filter((f) => eco.filePattern.test(f)).slice(0, 3);
+        if (matchingFiles.length === 0) return null;
+        
+        let allDependencies = [];
+        let allDevDependencies = [];
+        
+        for (const f of matchingFiles) {
+          const content = await fetchFileContent(owner, repo, f);
+          if (!content) continue;
+          
+          const rawContent = typeof content === 'object' ? JSON.stringify(content) : String(content);
+          const parsed = eco.parse(rawContent, f);
+          if (parsed) {
+             allDependencies.push(...parsed.dependencies);
+             allDevDependencies.push(...parsed.devDependencies);
+          }
+        }
+        
+        if (allDependencies.length > 0 || allDevDependencies.length > 0) {
+          return {
+            ecosystem: eco.name,
+            file: matchingFiles.join(', '),
+            dependencies: [...new Set(allDependencies)],
+            devDependencies: [...new Set(allDevDependencies)],
+            raw: '' // Don't combine raw as it may be too huge
+          };
         }
         return null;
       }
 
       const content = await fetchFileContent(owner, repo, eco.file);
       if (!content) return null;
-      const parsed = eco.parse(String(content));
+      
+      const rawContent = typeof content === 'object' ? JSON.stringify(content) : String(content);
+      const parsed = eco.parse(rawContent);
       if (parsed && (parsed.dependencies.length > 0 || parsed.devDependencies.length > 0)) {
         return parsed;
       }
